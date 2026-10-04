@@ -161,32 +161,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status.edit_text("❌ Không thể kết nối tới đường dẫn này.")
         return
         
-    # 1. LẤY TÊN TRUYỆN CHUẨN XÁC TỪ CODE BAN ĐẦU CỦA BẠN (Dùng soup của trang hiện tại)
-    title = "Truyen"
-    if soup:
-        og_title = soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            title = og_title["content"].split("|")[0].strip()
-        else:
-            h1_tag = soup.select_one("h1") or soup.select_one(".title")
-            if h1_tag:
-                title = h1_tag.get_text().strip()
-            elif soup.title:
-                page_title = soup.title.get_text().strip()
-                title = page_title.split("-")[0].strip() if "-" in page_title else page_title
-
-    # Bỏ chữ "Chương 1" (hoặc các chương khác) ra khỏi tên truyện và tên file như yêu cầu đầu tiên
-    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
-
     parsed_url = urlparse(input_url)
     path_parts = [p for p in parsed_url.path.split('/') if p]
     
+    # Lấy slug từ link để truy cập trang thông tin (Home URL của truyện) lấy tên chính xác có dấu và ảnh bìa
     slug = ""
     if len(path_parts) >= 2:
         slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
         
     home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}" if slug else input_url
     home_soup = get_content(home_url) if slug else soup
+    
+    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU (Ưu tiên từ thẻ h1 hoặc og:title ở trang thông tin)
+    title = "Truyen"
+    target_name_soup = home_soup if home_soup else soup
+    if target_name_soup:
+        og_title = target_name_soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].split("|")[0].strip()
+        else:
+            h1_tag = target_name_soup.select_one("h1") or target_name_soup.select_one(".title")
+            if h1_tag:
+                title = h1_tag.get_text().strip()
+            elif target_name_soup.title:
+                page_title = target_name_soup.title.get_text().strip()
+                title = page_title.split("-")[0].strip() if "-" in page_title else page_title
+
+    # Lọc bỏ chữ "Chương" nếu lỡ dính vào tên
+    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
 
     start_url = input_url
     
@@ -206,16 +208,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status.edit_text("❌ Không tìm thấy Chương 1. Vui lòng gửi trực tiếp link Chương 1.")
             return
 
-    # 2. LẤY ẢNH BÌA TỪ TRANG THÔNG TIN (HOME_SOUP) ĐỂ ẢNH LÊN ĐẸP NHƯ Ý
+    # 2. LẤY ẢNH BÌA TRUYỆN ĐẦY ĐỦ VÀ CHÍNH XÁC
     cover_image_data = None
     cover_image_ext = "jpg"
     try:
         target_img_soup = home_soup if home_soup else soup
         if target_img_soup:
+            # Quét tìm thẻ chứa ảnh bìa theo nhiều cấu trúc phổ biến của trang truyện
             img_tag = (
                 target_img_soup.select_one(".book img") or 
                 target_img_soup.select_one(".info img") or 
                 target_img_soup.select_one("div.book img") or
+                target_img_soup.select_one(".truyen-info img") or
                 target_img_soup.find("meta", property="og:image")
             )
             img_url = ""
@@ -223,13 +227,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if img_tag.name == "meta":
                     img_url = img_tag.get("content", "")
                 else:
-                    img_url = img_tag.get("src", "")
+                    img_url = img_tag.get("data-lazy-src") or img_tag.get("data-src") or img_tag.get("src", "")
             
             if img_url:
                 full_img_url = urljoin(home_url, img_url)
                 scraper = get_scraper()
-                img_res = scraper.get(full_img_url, timeout=10)
-                if img_res.status_code == 200:
+                img_res = scraper.get(full_img_url, timeout=15)
+                if img_res.status_code == 200 and len(img_res.content) > 1000:
                     cover_image_data = img_res.content
                     if "png" in full_img_url.lower():
                         cover_image_ext = "png"
@@ -242,6 +246,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
+    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
