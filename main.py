@@ -153,55 +153,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang phân tích link truyện...")
+    status = await update.message.reply_text("⏳ Đang kết nối tới truyện...")
     input_url = url_match[0].strip()
     
+    soup = get_content(input_url)
+    if not soup:
+        await status.edit_text("❌ Không thể kết nối tới đường dẫn này.")
+        return
+        
+    # 1. LẤY TÊN TRUYỆN CHUẨN XÁC TỪ CODE BAN ĐẦU CỦA BẠN (Dùng soup của trang hiện tại)
+    title = "Truyen"
+    if soup:
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].split("|")[0].strip()
+        else:
+            h1_tag = soup.select_one("h1") or soup.select_one(".title")
+            if h1_tag:
+                title = h1_tag.get_text().strip()
+            elif soup.title:
+                page_title = soup.title.get_text().strip()
+                title = page_title.split("-")[0].strip() if "-" in page_title else page_title
+
+    # Bỏ chữ "Chương 1" (hoặc các chương khác) ra khỏi tên truyện và tên file như yêu cầu đầu tiên
+    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
+
     parsed_url = urlparse(input_url)
     path_parts = [p for p in parsed_url.path.split('/') if p]
     
-    # TÌM SLUG CHUẨN XÁC TỪ MỌI ĐỊNH DẠNG LINK
     slug = ""
     if len(path_parts) >= 2:
-        if path_parts[0] == "doc-truyen":
-            slug = path_parts[1]  # Lấy tên truyện nằm ở vị trí sau /doc-truyen/
-        elif path_parts[0] == "truyen":
-            slug = path_parts[1]  # Lấy tên truyện nằm ở vị trí sau /truyen/
-    elif len(path_parts) == 1:
-        slug = path_parts[0]
-
-    # Luôn truy cập trực tiếp vào trang thông tin gốc của truyện để lấy thông tin chuẩn
+        slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
+        
     home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}" if slug else input_url
-    home_soup = get_content(home_url)
-    
-    if not home_soup:
-        # Fallback nếu không tải được trang chủ thì tải trực tiếp link người dùng gửi
-        home_soup = get_content(input_url)
-        if not home_soup:
-            await status.edit_text("❌ Không thể kết nối tới đường dẫn này.")
-            return
-
-    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU TỪ TRANG THÔNG TIN (Tuyệt đối không dính chữ Chương)
-    title = "Truyen"
-    h1_tag = home_soup.select_one("h1") or home_soup.select_one(".title")
-    if h1_tag:
-        title = h1_tag.get_text().strip()
-    else:
-        og_title = home_soup.find("meta", property="og:title")
-        if og_title and og_title.get("content"):
-            title = og_title["content"].split("|")[0].strip()
-        elif home_soup.title:
-            page_title = home_soup.title.get_text().strip()
-            title = page_title.split("-")[0].strip() if "-" in page_title else page_title
-
-    # Dọn dẹp phụ phí nếu lỡ dính
-    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
+    home_soup = get_content(home_url) if slug else soup
 
     start_url = input_url
     
-    # Nếu người dùng gửi link trực tiếp một chương cụ thể, ta vẫn giữ link đó để làm điểm xuất phát cào chương
+    # Nếu gửi link trang giới thiệu (/truyen/), tự động tìm đến Chương 1
     if "/truyen/" in input_url:
         first_chap_link = None
-        for a in home_soup.find_all("a", href=True):
+        target_soup = home_soup if home_soup else soup
+        for a in target_soup.find_all("a", href=True):
             href = a.get("href", "")
             if "chuong-1" in href and "/doc-truyen/" in href:
                 first_chap_link = a
@@ -213,27 +206,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status.edit_text("❌ Không tìm thấy Chương 1. Vui lòng gửi trực tiếp link Chương 1.")
             return
 
-    # 2. LẤY ẢNH BÌA CHUẨN TỪ KHUNG `.book img`
+    # 2. LẤY ẢNH BÌA TỪ TRANG THÔNG TIN (HOME_SOUP) ĐỂ ẢNH LÊN ĐẸP NHƯ Ý
     cover_image_data = None
     cover_image_ext = "jpg"
     try:
-        img_tag = home_soup.select_one(".book img") or home_soup.select_one(".info img") or home_soup.select_one("div.book img")
-        img_url = ""
-        if img_tag and img_tag.get("src"):
-            img_url = img_tag.get("src")
-        else:
-            meta_img = home_soup.find("meta", property="og:image")
-            if meta_img and meta_img.get("content"):
-                img_url = meta_img.get("content")
-        
-        if img_url:
-            full_img_url = urljoin(home_url, img_url)
-            scraper = get_scraper()
-            img_res = scraper.get(full_img_url, timeout=10)
-            if img_res.status_code == 200:
-                cover_image_data = img_res.content
-                if "png" in full_img_url.lower():
-                    cover_image_ext = "png"
+        target_img_soup = home_soup if home_soup else soup
+        if target_img_soup:
+            img_tag = (
+                target_img_soup.select_one(".book img") or 
+                target_img_soup.select_one(".info img") or 
+                target_img_soup.select_one("div.book img") or
+                target_img_soup.find("meta", property="og:image")
+            )
+            img_url = ""
+            if img_tag:
+                if img_tag.name == "meta":
+                    img_url = img_tag.get("content", "")
+                else:
+                    img_url = img_tag.get("src", "")
+            
+            if img_url:
+                full_img_url = urljoin(home_url, img_url)
+                scraper = get_scraper()
+                img_res = scraper.get(full_img_url, timeout=10)
+                if img_res.status_code == 200:
+                    cover_image_data = img_res.content
+                    if "png" in full_img_url.lower():
+                        cover_image_ext = "png"
     except Exception as e:
         print(f"Không lấy được ảnh bìa: {e}")
 
