@@ -54,19 +54,9 @@ def get_content(url):
         print(f"Lỗi tải {url}: {e}")
     return None
 
-def extract_chapter_number(name):
-    name_lower = name.lower()
-    if "cuối" in name_lower or "ngoại" in name_lower or "ngoai" in name_lower or "extra" in name_lower:
-        return 999999
-        
-    numbers = re.findall(r'\d+', name)
-    if numbers:
-        return int(numbers[0])
-    return 0
-
 def download_chap(url):
     soup = get_content(url)
-    if not soup: return "", None
+    if not soup: return "", None, ""
     
     container = (
         soup.select_one(".chapter-content") or
@@ -149,131 +139,75 @@ def download_chap(url):
             valid_p.append(f"<p>{text}</p>")
         
     content_html = "".join(valid_p) if valid_p else str(container)
-    return real_title, content_html
+    
+    # Tìm link chương tiếp theo từ nút "Chương sau"
+    next_url = ""
+    for a in soup.find_all("a", href=True):
+        t = a.get_text().strip().lower()
+        if "chương sau" in t or "sau »" in t or "tiếp »" in t or "»" in t:
+            href = a.get("href")
+            if href and "javascript" not in href:
+                next_url = urldefrag(urljoin(url, href))[0]
+                break
+                
+    return real_title, content_html, next_url
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang phân tích link và kết nối Kênh Truyện Full...")
-    raw_url = url_match[0].strip()
+    status = await update.message.reply_text("⏳ Đang bắt đầu quét truyện từ link chương...")
+    start_url = url_match[0].strip()
     
-    # Tự động dịch ngược link chương lẻ về trang chủ truyện
-    if "/doc-truyen/" in raw_url:
-        parts = raw_url.split("/doc-truyen/")
-        base_site = parts[0].rstrip("/")
-        slug = parts[1].split("/")[0]
-        story_url = f"{base_site}/truyen/{slug}"
-    else:
-        story_url = raw_url
-    
-    main_soup = get_content(story_url)
-    if not main_soup:
-        story_url = raw_url
-        main_soup = get_content(story_url)
-        if not main_soup:
-            await status.edit_text("❌ Không thể kết nối tới trang truyện.")
-            return
-        
-    og_title = main_soup.find("meta", property="og:title")
-    if og_title and og_title.get("content"):
-        title = og_title["content"]
-    else:
-        title_el = main_soup.select_one("h1") or main_soup.title
-        title = title_el.get_text().strip() if title_el else "Truyện"
-        
-    if "|" in title:
-        title = title.split('|')[0].strip()
-        
-    cover_url = None
-    og_img = main_soup.find("meta", property="og:image")
-    if og_img and og_img.get("content"):
-        cover_url = og_img["content"]
-    
-    if not cover_url:
-        img_el = main_soup.select_one(".book img, .info-image img, .story-image img, img.cover, article img")
-        if img_el:
-            cover_url = img_el.get("data-src") or img_el.get("data-original") or img_el.get("src")
-
-    if cover_url:
-        cover_url = urljoin(story_url, cover_url)
-
-    links = []
-    all_tags = main_soup.find_all("a", href=True)
-    for a in all_tags:
-        href = a.get('href', '')
-        text = a.get_text().strip()
-        
-        is_chap = re.match(r"^(chương|chuong|hồi|hoi|quyển|quyen|c\s*\d+|\d+|phần|phan|pn\s*\d+|nt\s*\d+|ngoại truyện)", text, flags=re.IGNORECASE)
-        
-        if is_chap and len(text) < 100:
-            full_url = urldefrag(urljoin(story_url, href))[0]
-            if not any(l['url'] == full_url for l in links):
-                links.append({"name": text, "url": full_url})
-
-    links.sort(key=lambda x: extract_chapter_number(x['name']))
-
-    if not links:
-        await status.edit_text("❌ Không tìm thấy chương nào hoặc link không hợp lệ.")
+    # Tải chương đầu tiên để lấy thông tin tên truyện và dò các chương tiếp theo
+    first_soup = get_content(start_url)
+    if not first_soup:
+        await status.edit_text("❌ Không thể kết nối tới link chương.")
         return
         
-    await status.edit_text(f"📚 {title}\n⚡ Đã quét xong {len(links)} chương. Đang tải song song...")
-
-    results = {}
+    # Trích xuất tên truyện từ tiêu đề trang
+    page_title = first_soup.title.get_text().strip() if first_soup.title else "Truyện"
+    title = page_title.split("-")[0].strip() if "-" in page_title else page_title
     
-    def task(idx, chap_info):
-        r_title, content = download_chap(chap_info["url"])
-        final_title = r_title if r_title else chap_info["name"]
-        return idx, {"name": final_title, "content": content}
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(task, i, c): i for i, c in enumerate(links)}
-        completed = 0
-        last_update_time = 0
-        
-        for future in as_completed(futures):
-            idx, res = future.result()
-            results[idx] = res
-            completed += 1
+    links = []
+    current_url = start_url
+    
+    # Lần lượt cào các chương thông qua nút "Chương sau"
+    await status.edit_text(f"📚 {title}\n⚡ Đang dò danh sách các chương...")
+    
+    max_safety = 2000 # Giới hạn tối đa tránh lặp vô tận
+    while current_url and len(links) < max_safety:
+        r_title, content, next_url = download_chap(current_url)
+        if not content:
+            break
             
-            current_time = time.time()
-            if completed == len(links) or (current_time - last_update_time > 2.5):
-                last_update_time = current_time
-                try:
-                    pct = int((completed / len(links)) * 100)
-                    await status.edit_text(f"📚 {title}\n⚡ Đang tải: {pct}%\n(Đã xong {completed}/{len(links)} chương)")
-                except Exception:
-                    pass
+        chap_name = r_title or f"Chương {len(links) + 1}"
+        links.append({"url": current_url, "name": chap_name, "content": content})
+        
+        if not next_url or next_url == current_url:
+            break
+            
+        current_url = next_url
+        if len(links) % 10 == 0:
+            await status.edit_text(f"📚 {title}\n⚡ Đã dò thấy {len(links)} chương...")
+
+    if not links:
+        await status.edit_text("❌ Không tìm thấy nội dung chương nào.")
+        return
+        
+    await status.edit_text(f"📚 {title}\n⚡ Đã thu thập xong {len(links)} chương. Đang đóng gói EPUB...")
 
     book = epub.EpubBook()
     book.set_identifier('truyen_' + re.sub(r'\W+', '', title))
     book.set_title(title)
     book.set_language('vi')
-    
-    if cover_url:
-        try:
-            scraper = get_scraper()
-            img_res = scraper.get(cover_url, timeout=15)
-            if img_res.status_code == 200:
-                book.set_cover("cover.jpg", img_res.content)
-        except Exception as e:
-            print(f"Lỗi tải ảnh bìa: {e}")
 
     chapters_list = []
-    success_count = 0
-    for i in range(len(links)):
-        chap_data = results.get(i)
-        if chap_data and chap_data["content"]:
-            chap_title = chap_data["name"]
-            chap = epub.EpubHtml(title=chap_title, file_name=f"chap_{i+1}.xhtml")
-            chap.content = f"<h2>{chap_title}</h2>{chap_data['content']}"
-            book.add_item(chap)
-            chapters_list.append(chap)
-            success_count += 1
-
-    if success_count == 0:
-        await status.edit_text("❌ Tải thất bại do trang web chặn toàn bộ nội dung.")
-        return
+    for i, chap in enumerate(links):
+        epub_chap = epub.EpubHtml(title=chap["name"], file_name=f"chap_{i+1}.xhtml")
+        epub_chap.content = f"<h2>{chap['name']}</h2>{chap['content']}"
+        book.add_item(epub_chap)
+        chapters_list.append(epub_chap)
 
     book.toc = tuple(chapters_list)
     book.spine = ['nav'] + chapters_list
@@ -289,7 +223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(file_name, "rb") as f:
         await update.message.reply_document(
             document=f, 
-            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {success_count}/{len(links)} chương!"
+            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {len(links)} chương!"
         )
 
     await status.delete()
