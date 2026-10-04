@@ -123,20 +123,25 @@ def download_chap(url):
         
     content_html = "".join(valid_p) if valid_p else str(container)
     
+    # Tìm chính xác nút "Tiếp >" dựa theo hình ảnh thực tế của trang web
     next_url = ""
+    next_btn = None
+    
+    # Quét các thẻ a có chứa chữ "tiếp" hoặc ký tự "»" hoặc nằm trong khu vực điều hướng
     for a in soup.find_all("a", href=True):
         t = a.get_text().strip().lower()
         href = a.get("href", "")
         
-        is_next_btn = any(k in t for k in ["tiếp", "sau", "»", "next"])
-        is_prev_btn = any(k in t for k in ["trước", "«", "prev"])
+        is_next = any(k in t for k in ["tiếp", "sau", "»", "next"])
+        is_prev = any(k in t for k in ["trước", "«", "prev"])
         
-        if is_next_btn and not is_prev_btn and "/doc-truyen/" in href:
+        if is_next and not is_prev and "/doc-truyen/" in href:
             if href and "javascript" not in href and "#" not in href:
-                candidate_url = urldefrag(urljoin(url, href))[0]
-                if candidate_url != url:
-                    next_url = candidate_url
-                    break
+                next_btn = a
+                break
+                
+    if next_btn:
+        next_url = urldefrag(urljoin(url, next_btn.get("href")))[0]
                     
     return content_html, next_url
 
@@ -144,7 +149,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang phân tích link truyện...")
+    status = await update.message.reply_text("⏳ Đang kết nối tới truyện...")
     input_url = url_match[0].strip()
     
     soup = get_content(input_url)
@@ -157,23 +162,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     start_url = input_url
     
-    # Nếu người dùng gửi link trang giới thiệu (/truyen/), tự động tìm link "Đọc từ đầu" hoặc Chương 1
+    # Nếu gửi link trang giới thiệu (/truyen/), tự động tìm đến Chương 1
     if "/truyen/" in input_url:
-        first_chap_link = soup.select_one(".list-chapter a") or soup.select_one("a.btn-success") or soup.select_one("a[title*='Chương 1']")
-        if not first_chap_link:
-            # Quét tất cả thẻ a tìm chương đầu tiên
-            for a in soup.find_all("a", href=True):
-                if "chuong-1" in a.get("href", ""):
-                    first_chap_link = a
-                    break
+        first_chap_link = None
+        for a in soup.find_all("a", href=True):
+            href = a.get("href", "")
+            if "chuong-1" in href and "/doc-truyen/" in href:
+                first_chap_link = a
+                break
         
         if first_chap_link and first_chap_link.get("href"):
             start_url = urldefrag(urljoin(input_url, first_chap_link.get("href")))[0]
         else:
-            await status.edit_text("❌ Không tìm thấy chương 1 từ trang này. Vui lòng gửi trực tiếp link Chương 1.")
+            await status.edit_text("❌ Không tìm thấy Chương 1. Vui lòng gửi trực tiếp link Chương 1.")
             return
 
-    # TẢI ẢNH BÌA TRUYỆN
+    # Lấy ảnh bìa truyện từ trang thông tin
     cover_image_data = None
     cover_image_ext = "jpg"
     try:
@@ -202,6 +206,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
+    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
