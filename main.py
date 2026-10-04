@@ -68,7 +68,6 @@ def download_chap(url):
     soup = get_content(url)
     if not soup: return "", None
     
-    # Ưu tiên các khung chứa nội dung chuẩn của Kênh Truyện Full và các web tương tự
     container = (
         soup.select_one(".chapter-content") or
         soup.select_one("#chapter-content") or
@@ -83,7 +82,6 @@ def download_chap(url):
     if not container:
         container = soup
 
-    # Loại bỏ quảng cáo, hình ảnh, script rác
     for tag in container.find_all(["img", "svg", "iframe", "picture", "hr", "script", "style", "ins"]):
         tag.decompose()
         
@@ -92,7 +90,6 @@ def download_chap(url):
         if re.search(r"ads|banner|ebook|download|promo|nav|menu|box-h|truyen-hot|ads-chapter", classes, re.I):
             box.decompose()
 
-    # Trích xuất tiêu đề chương thực tế
     real_title = ""
     for h in container.find_all(["h1", "h2", "h3"]):
         text = h.get_text().strip()
@@ -126,7 +123,6 @@ def download_chap(url):
             if element not in [container, soup.body] and element.name not in ["p", "br"]:
                 element.decompose()
 
-    # Lấy các đoạn văn bản p hoặc div sạch
     paragraphs = container.find_all(["p", "div"])
     valid_p = []
     seen_texts = set()
@@ -192,63 +188,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     parsed_url = urlparse(story_url)
     base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    story_path = parsed_url.path.rstrip('/')
 
     links = []
-    current_page_url = story_url
-    page_num = 1
     
-    while current_page_url:
-        soup = get_content(current_page_url)
-        if not soup: break
-            
-        # Quét tất cả các thẻ a trong danh sách chương của trang
-        chapter_tags = soup.select("#list-chapter a, .list-chapter a, .chapter-list a, .list-truyen a, a")
-        if not chapter_tags: break
-            
-        new_chapters_in_page = 0
-        for a in chapter_tags:
-            href = a.get('href', '')
-            if href:
-                full_url = urldefrag(urljoin(current_page_url, href))[0]
-                if story_path not in full_url and parsed_url.netloc in base_domain:
-                    # Đảm bảo link thuộc về truyện đang tải
-                    pass
-
-                text = a.get_text().strip()
-                is_chap = re.match(r"^(chương|chuong|hồi|hoi|quyển|quyen|c\s*\d+|\d+|phần|phan|pn\s*\d+|nt\s*\d+|ngoại truyện)", text, flags=re.IGNORECASE)
-                
-                if is_chap and len(text) < 80:
-                    if not any(l['url'] == full_url for l in links):
-                        links.append({"name": text, "url": full_url})
-                        new_chapters_in_page += 1
-                    
-        if new_chapters_in_page == 0 and page_num > 1: break
-            
-        # Tìm phân trang (pagination) nếu có
-        pagination_links = soup.select(".pagination a, .pages a, .page-item a")
-        next_url = None
-        for p_link in pagination_links:
-            text_p = p_link.get_text().strip()
-            if "Trang sau" in text_p or ">" in text_p or str(page_num + 1) == text_p:
-                next_url = p_link.get('href')
-                break
-                
-        if next_url:
-            next_full_url = next_url if next_url.startswith("http") else base_domain + next_url
-            if next_full_url == current_page_url: break
-            current_page_url = next_full_url
-            page_num += 1
-        else:
-            if page_num < 30:
-                guessed_url = f"{story_url.rstrip('/')}/trang-{page_num + 1}/"
-                # Test thử trang tiếp theo xem có tồn tại không
-                test_soup = get_content(guessed_url)
-                if test_soup and test_soup.select("#list-chapter a, .list-chapter a, a"):
-                    current_page_url = guessed_url
-                    page_num += 1
-                    continue
-            break
+    # Quét tất cả các thẻ a trên trang thông tin truyện để tìm các liên kết chương
+    all_tags = main_soup.find_all("a", href=True)
+    for a in all_tags:
+        href = a.get('href', '')
+        text = a.get_text().strip()
+        
+        # Nhận diện tiêu đề chương linh hoạt hơn
+        is_chap = re.match(r"^(chương|chuong|hồi|hoi|quyển|quyen|c\s*\d+|\d+|phần|phan|pn\s*\d+|nt\s*\d+|ngoại truyện)", text, flags=re.IGNORECASE)
+        
+        if is_chap and len(text) < 100:
+            full_url = urldefrag(urljoin(story_url, href))[0]
+            if not any(l['url'] == full_url for l in links):
+                links.append({"name": text, "url": full_url})
 
     links.sort(key=lambda x: extract_chapter_number(x['name']))
 
