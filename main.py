@@ -127,7 +127,6 @@ def download_chap(url):
     next_url = ""
     next_btn = None
     
-    # Quét các thẻ a có chứa chữ "tiếp" hoặc ký tự "»" hoặc nằm trong khu vực điều hướng
     for a in soup.find_all("a", href=True):
         t = a.get_text().strip().lower()
         href = a.get("href", "")
@@ -149,16 +148,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang kết nối tới truyện...")
+    status = await update.message.reply_text("⏳ Đang phân tích link truyện...")
     input_url = url_match[0].strip()
     
+    # Trích xuất tên truyện trực tiếp từ cấu trúc link gửi vào
+    title = "Truyen"
+    parsed_url = urlparse(input_url)
+    path_parts = [p for p in parsed_url.path.split('/') if p]
+    
+    if len(path_parts) >= 2:
+        if path_parts[0] == "doc-truyen":
+            raw_name = path_parts[1]
+            title = " ".join([word.capitalize() for word in raw_name.split('-')])
+        elif path_parts[0] == "truyen":
+            raw_name = path_parts[1]
+            title = " ".join([word.capitalize() for word in raw_name.split('-')])
+
     soup = get_content(input_url)
     if not soup:
         await status.edit_text("❌ Không thể kết nối tới đường dẫn này.")
         return
-        
-    page_title = soup.title.get_text().strip() if soup.title else "Truyện"
-    title = page_title.split("-")[0].strip() if "-" in page_title else page_title
 
     start_url = input_url
     
@@ -181,10 +190,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cover_image_data = None
     cover_image_ext = "jpg"
     try:
-        parsed_url = urlparse(start_url)
-        path_parts = [p for p in parsed_url.path.split('/') if p]
-        if len(path_parts) >= 2:
-            slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
+        slug = path_parts[1] if len(path_parts) >= 2 else ""
+        if slug:
             home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}"
             home_soup = get_content(home_url)
             if home_soup:
@@ -206,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
-    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết
+    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết kết hợp hiển thị tiến độ phần trăm
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
@@ -218,18 +225,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         links.append({"url": current_url, "name": chap_name, "content": content})
         
+        # Cập nhật thông báo tiến độ kèm phần trăm ước tính hoặc số lượng chương đã cào
+        if len(links) % 3 == 0:
+            await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)} chương...")
+        
         if not next_url or next_url in visited_urls:
             break
             
         current_url = next_url
-        if len(links) % 5 == 0:
-            await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)} chương...")
 
     if not links:
         await status.edit_text("❌ Không tìm thấy nội dung chương nào.")
         return
         
-    await status.edit_text(f"📚 {title}\n⚡ Đã xong tổng cộng {len(links)} chương. Đang đóng gói EPUB kèm ảnh bìa...")
+    total_chapters = len(links)
+    await status.edit_text(f"📚 {title}\n⚡ Đã xong tổng cộng {total_chapters} chương (100%). Đang đóng gói EPUB...")
 
     book = epub.EpubBook()
     book.set_identifier('truyen_' + re.sub(r'\W+', '', title))
@@ -261,7 +271,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(file_name, "rb") as f:
         await update.message.reply_document(
             document=f, 
-            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {len(links)} chương (Có ảnh bìa)!"
+            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {total_chapters} chương (Có ảnh bìa)!"
         )
 
     await status.delete()
