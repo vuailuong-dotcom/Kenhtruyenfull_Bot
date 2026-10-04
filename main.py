@@ -164,7 +164,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parsed_url = urlparse(input_url)
     path_parts = [p for p in parsed_url.path.split('/') if p]
     
-    # Lấy slug từ link để truy cập trang thông tin (Home URL của truyện) lấy tên chính xác có dấu và ảnh bìa
+    # Lấy slug từ link để truy cập trang thông tin (Home URL của truyện) lấy ảnh bìa đẹp
     slug = ""
     if len(path_parts) >= 2:
         slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
@@ -172,7 +172,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}" if slug else input_url
     home_soup = get_content(home_url) if slug else soup
     
-    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU (Ưu tiên từ thẻ h1 hoặc og:title ở trang thông tin)
+    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU
     title = "Truyen"
     target_name_soup = home_soup if home_soup else soup
     if target_name_soup:
@@ -187,8 +187,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 page_title = target_name_soup.title.get_text().strip()
                 title = page_title.split("-")[0].strip() if "-" in page_title else page_title
 
-    # Lọc bỏ chữ "Chương" nếu lỡ dính vào tên
-    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
+    # Lọc bỏ hoàn toàn mọi hậu tố chữ "Chương..." ở tiêu đề (dù nằm trong ngoặc hay ngoài ngoặc)
+    title = re.sub(r'\s*[\(\-]?\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
+    title = title.rstrip('() -')
 
     start_url = input_url
     
@@ -214,7 +215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_img_soup = home_soup if home_soup else soup
         if target_img_soup:
-            # Quét tìm thẻ chứa ảnh bìa theo nhiều cấu trúc phổ biến của trang truyện
             img_tag = (
                 target_img_soup.select_one(".book img") or 
                 target_img_soup.select_one(".info img") or 
@@ -246,7 +246,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
-    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
