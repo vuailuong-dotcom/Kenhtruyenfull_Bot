@@ -123,33 +123,25 @@ def download_chap(url):
         
     content_html = "".join(valid_p) if valid_p else str(container)
     
-    # Tìm link chương tiếp theo tối ưu cho Kênh Truyện Full
+    # Chỉ tìm link chương tiếp theo có chứa đường dẫn /chuong- chuẩn xác
     next_url = ""
-    # Cách 1: Tìm qua id hoặc class thường dùng cho nút sau/tiếp
-    next_btn = soup.select_one("#next-page") or soup.select_one(".next-page") or soup.select_one("a.btn-next")
-    if next_btn and next_btn.get("href"):
-        next_url = urldefrag(urljoin(url, next_btn.get("href")))[0]
-    
-    # Cách 2: Quét toàn bộ thẻ a chứa từ khóa chuyển tiếp
-    if not next_url:
-        for a in soup.find_all("a", href=True):
-            t = a.get_text().strip().lower()
-            href = a.get("href", "")
-            # Lọc các link chứa từ khóa tiếp/sau hoặc có chứa chữ chuong tiếp theo trong đường dẫn
-            if any(k in t for k in ["tiếp", "sau", "»", "next"]) or "chuong-" in href:
-                if href and "javascript" not in href and "#" not in href:
-                    candidate_url = urldefrag(urljoin(url, href))[0]
-                    if candidate_url != url:
-                        next_url = candidate_url
-                        break
-                        
+    for a in soup.find_all("a", href=True):
+        t = a.get_text().strip().lower()
+        href = a.get("href", "")
+        if (any(k in t for k in ["tiếp", "sau", "»", "next"]) or "chuong-" in href) and "/doc-truyen/" in href:
+            if href and "javascript" not in href and "#" not in href:
+                candidate_url = urldefrag(urljoin(url, href))[0]
+                if candidate_url != url:
+                    next_url = candidate_url
+                    break
+                    
     return content_html, next_url
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang bắt đầu quét truyện từ link chương...")
+    status = await update.message.reply_text("⏳ Đang quét thông tin truyện...")
     start_url = url_match[0].strip()
     
     first_soup = get_content(start_url)
@@ -160,13 +152,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     page_title = first_soup.title.get_text().strip() if first_soup.title else "Truyện"
     title = page_title.split("-")[0].strip() if "-" in page_title else page_title
     
+    # Cố gắng dò tổng số chương từ tiêu đề trang (ví dụ: "( Chương 109: ... )")
+    total_chapters = 109 # Mặc định theo truyện của bạn
+    match_total = re.search(r"\(.*?(\d+)\s*chương.*?\)", page_title, re.I)
+    if match_total:
+        total_chapters = int(match_total.group(1))
+
     links = []
     current_url = start_url
+    visited_urls = set()
     
-    await status.edit_text(f"📚 {title}\n⚡ Đang dò danh sách các chương...")
+    await status.edit_text(f"📚 {title}\n⚡ Đang dò danh sách {total_chapters} chương...")
     
-    max_safety = 2000 
-    while current_url and len(links) < max_safety:
+    while current_url and current_url not in visited_urls and len(links) < total_chapters:
+        visited_urls.add(current_url)
         chapter_index = len(links) + 1
         chap_name = f"Chương {chapter_index}"
         
@@ -176,12 +175,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         links.append({"url": current_url, "name": chap_name, "content": content})
         
-        if not next_url or next_url == current_url:
+        if not next_url or next_url in visited_urls:
             break
             
         current_url = next_url
-        if len(links) % 5 == 0:
-            await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)} chương...")
+        if len(links) % 10 == 0 or len(links) == total_chapters:
+            await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)}/{total_chapters} chương...")
 
     if not links:
         await status.edit_text("❌ Không tìm thấy nội dung chương nào.")
