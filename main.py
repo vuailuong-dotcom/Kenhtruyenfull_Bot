@@ -164,34 +164,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parsed_url = urlparse(input_url)
     path_parts = [p for p in parsed_url.path.split('/') if p]
     
-    # Lấy slug từ link để truy cập trang thông tin (Home URL của truyện) lấy tên chính xác có dấu và ảnh bìa
+    # Lấy slug từ link để truy cập trang thông tin gốc của truyện
     slug = ""
     if len(path_parts) >= 2:
-        slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
+        if path_parts[0] == "doc-truyen":
+            slug = path_parts[1]
+        elif path_parts[0] == "truyen":
+            slug = path_parts[1]
         
     home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}" if slug else input_url
     home_soup = get_content(home_url) if slug else soup
     
-    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU (Ưu tiên từ thẻ h1 hoặc og:title ở trang thông tin)
+    # 1. LẤY TÊN TRUYỆN CHUẨN CÓ DẤU VÀ LOẠI BỎ CHỮ "CHƯƠNG 1"
     title = "Truyen"
-    if home_soup:
-        og_title = home_soup.find("meta", property="og:title")
+    target_soup = home_soup if home_soup else soup
+    
+    # Ưu tiên lấy từ thẻ h1 của trang thông tin truyện (trang này không chứa chữ Chương 1)
+    h1_tag = target_soup.select_one("h1") or target_soup.select_one(".title")
+    if h1_tag:
+        title = h1_tag.get_text().strip()
+    else:
+        og_title = target_soup.find("meta", property="og:title")
         if og_title and og_title.get("content"):
             title = og_title["content"].split("|")[0].strip()
-        else:
-            h1_tag = home_soup.select_one("h1") or home_soup.select_one(".title")
-            if h1_tag:
-                title = h1_tag.get_text().strip()
-            elif home_soup.title:
-                page_title = home_soup.title.get_text().strip()
-                title = page_title.split("-")[0].strip() if "-" in page_title else page_title
+        elif target_soup.title:
+            page_title = target_soup.title.get_text().strip()
+            title = page_title.split("-")[0].strip() if "-" in page_title else page_title
+
+    # Dùng biểu thức chính quy để dọn sạch hoàn toàn các hậu tố dư thừa như " - Chương 1", " Chương 1",...
+    title = re.sub(r'\s*-\s*Chương\s*\d+.*$', '', title, flags=re.IGNORECASE).strip()
 
     start_url = input_url
     
     # Nếu gửi link trang giới thiệu (/truyen/), tự động tìm đến Chương 1
     if "/truyen/" in input_url:
         first_chap_link = None
-        target_soup = home_soup if home_soup else soup
         for a in target_soup.find_all("a", href=True):
             href = a.get("href", "")
             if "chuong-1" in href and "/doc-truyen/" in href:
@@ -204,23 +211,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status.edit_text("❌ Không tìm thấy Chương 1. Vui lòng gửi trực tiếp link Chương 1.")
             return
 
-    # 2. LẤY ẢNH BÌA TRUYỆN
+    # 2. LẤY ẢNH BÌA CHUẨN TỪ KHUNG `.book img` CỦA KÊNH TRUYỆN FULL
     cover_image_data = None
     cover_image_ext = "jpg"
     try:
         if home_soup:
-            img_tag = (
-                home_soup.find("meta", property="og:image") or
-                home_soup.select_one(".book img") or 
-                home_soup.select_one(".info img") or 
-                home_soup.select_one("div.book img")
-            )
+            # Ưu tiên quét trực tiếp thẻ ảnh trong khung `.book` hoặc `.info` của trang thông tin
+            img_tag = home_soup.select_one(".book img") or home_soup.select_one(".info img") or home_soup.select_one("div.book img")
             img_url = ""
-            if img_tag:
-                if img_tag.name == "meta":
-                    img_url = img_tag.get("content", "")
-                else:
-                    img_url = img_tag.get("src", "")
+            if img_tag and img_tag.get("src"):
+                img_url = img_tag.get("src")
+            else:
+                meta_img = home_soup.find("meta", property="og:image")
+                if meta_img and meta_img.get("content"):
+                    img_url = meta_img.get("content")
             
             if img_url:
                 full_img_url = urljoin(home_url, img_url)
@@ -239,7 +243,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
-    # Vòng lặp cào tuần tự qua từng nút "Tiếp >" cho đến hết
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
