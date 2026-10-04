@@ -123,16 +123,26 @@ def download_chap(url):
         
     content_html = "".join(valid_p) if valid_p else str(container)
     
-    # Tìm link chương tiếp theo từ nút "Chương sau"
+    # Tìm link chương tiếp theo tối ưu cho Kênh Truyện Full
     next_url = ""
-    for a in soup.find_all("a", href=True):
-        t = a.get_text().strip().lower()
-        if "chương sau" in t or "sau »" in t or "tiếp »" in t or "»" in t:
-            href = a.get("href")
-            if href and "javascript" not in href:
-                next_url = urldefrag(urljoin(url, href))[0]
-                break
-                
+    # Cách 1: Tìm qua id hoặc class thường dùng cho nút sau/tiếp
+    next_btn = soup.select_one("#next-page") or soup.select_one(".next-page") or soup.select_one("a.btn-next")
+    if next_btn and next_btn.get("href"):
+        next_url = urldefrag(urljoin(url, next_btn.get("href")))[0]
+    
+    # Cách 2: Quét toàn bộ thẻ a chứa từ khóa chuyển tiếp
+    if not next_url:
+        for a in soup.find_all("a", href=True):
+            t = a.get_text().strip().lower()
+            href = a.get("href", "")
+            # Lọc các link chứa từ khóa tiếp/sau hoặc có chứa chữ chuong tiếp theo trong đường dẫn
+            if any(k in t for k in ["tiếp", "sau", "»", "next"]) or "chuong-" in href:
+                if href and "javascript" not in href and "#" not in href:
+                    candidate_url = urldefrag(urljoin(url, href))[0]
+                    if candidate_url != url:
+                        next_url = candidate_url
+                        break
+                        
     return content_html, next_url
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,7 +180,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
             
         current_url = next_url
-        if len(links) % 10 == 0:
+        if len(links) % 5 == 0:
             await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)} chương...")
 
     if not links:
@@ -201,7 +211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = f"{safe_title}.epub"
     epub.write_epub(file_name, book)
     
-    await status.edit_text("⬆️️ Đang gửi file EPUB qua Telegram...")
+    await status.edit_text("⬆ Đang gửi file EPUB qua Telegram...")
     with open(file_name, "rb") as f:
         await update.message.reply_document(
             document=f, 
