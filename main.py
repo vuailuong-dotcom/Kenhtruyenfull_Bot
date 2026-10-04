@@ -155,13 +155,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang kết nối Kênh Truyện Full và quét danh sách chương...")
-    story_url = url_match[0].strip()
+    status = await update.message.reply_text("⏳ Đang phân tích link và kết nối Kênh Truyện Full...")
+    raw_url = url_match[0].strip()
+    
+    # Tự động dịch ngược link chương lẻ về trang chủ truyện
+    if "/doc-truyen/" in raw_url:
+        parts = raw_url.split("/doc-truyen/")
+        base_site = parts[0].rstrip("/")
+        slug = parts[1].split("/")[0]
+        story_url = f"{base_site}/truyen/{slug}"
+    else:
+        story_url = raw_url
     
     main_soup = get_content(story_url)
     if not main_soup:
-        await status.edit_text("❌ Không thể kết nối tới trang truyện.")
-        return
+        story_url = raw_url
+        main_soup = get_content(story_url)
+        if not main_soup:
+            await status.edit_text("❌ Không thể kết nối tới trang truyện.")
+            return
         
     og_title = main_soup.find("meta", property="og:title")
     if og_title and og_title.get("content"):
@@ -186,18 +198,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cover_url:
         cover_url = urljoin(story_url, cover_url)
 
-    parsed_url = urlparse(story_url)
-    base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
-
     links = []
-    
-    # Quét tất cả các thẻ a trên trang thông tin truyện để tìm các liên kết chương
     all_tags = main_soup.find_all("a", href=True)
     for a in all_tags:
         href = a.get('href', '')
         text = a.get_text().strip()
         
-        # Nhận diện tiêu đề chương linh hoạt hơn
         is_chap = re.match(r"^(chương|chuong|hồi|hoi|quyển|quyen|c\s*\d+|\d+|phần|phan|pn\s*\d+|nt\s*\d+|ngoại truyện)", text, flags=re.IGNORECASE)
         
         if is_chap and len(text) < 100:
