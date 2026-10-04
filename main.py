@@ -123,7 +123,6 @@ def download_chap(url):
         
     content_html = "".join(valid_p) if valid_p else str(container)
     
-    # Tìm chính xác link nút "Chương sau" và loại trừ nút "Chương trước"
     next_url = ""
     for a in soup.find_all("a", href=True):
         t = a.get_text().strip().lower()
@@ -145,16 +144,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
     if not url_match: return
     
-    status = await update.message.reply_text("⏳ Đang kết nối tới chương truyện...")
-    start_url = url_match[0].strip()
+    status = await update.message.reply_text("⏳ Đang phân tích link truyện...")
+    input_url = url_match[0].strip()
     
-    first_soup = get_content(start_url)
-    if not first_soup:
-        await status.edit_text("❌ Không thể kết nối tới link chương.")
+    soup = get_content(input_url)
+    if not soup:
+        await status.edit_text("❌ Không thể kết nối tới đường dẫn này.")
         return
         
-    page_title = first_soup.title.get_text().strip() if first_soup.title else "Truyện"
+    page_title = soup.title.get_text().strip() if soup.title else "Truyện"
     title = page_title.split("-")[0].strip() if "-" in page_title else page_title
+
+    start_url = input_url
+    
+    # Nếu người dùng gửi link trang giới thiệu (/truyen/), tự động tìm link "Đọc từ đầu" hoặc Chương 1
+    if "/truyen/" in input_url:
+        first_chap_link = soup.select_one(".list-chapter a") or soup.select_one("a.btn-success") or soup.select_one("a[title*='Chương 1']")
+        if not first_chap_link:
+            # Quét tất cả thẻ a tìm chương đầu tiên
+            for a in soup.find_all("a", href=True):
+                if "chuong-1" in a.get("href", ""):
+                    first_chap_link = a
+                    break
+        
+        if first_chap_link and first_chap_link.get("href"):
+            start_url = urldefrag(urljoin(input_url, first_chap_link.get("href")))[0]
+        else:
+            await status.edit_text("❌ Không tìm thấy chương 1 từ trang này. Vui lòng gửi trực tiếp link Chương 1.")
+            return
+
+    # TẢI ẢNH BÌA TRUYỆN
+    cover_image_data = None
+    cover_image_ext = "jpg"
+    try:
+        parsed_url = urlparse(start_url)
+        path_parts = [p for p in parsed_url.path.split('/') if p]
+        if len(path_parts) >= 2:
+            slug = path_parts[1] if path_parts[0] == "doc-truyen" else path_parts[0]
+            home_url = f"{parsed_url.scheme}://{parsed_url.netloc}/truyen/{slug}"
+            home_soup = get_content(home_url)
+            if home_soup:
+                img_tag = home_soup.select_one(".book img") or home_soup.select_one(".info img") or home_soup.select_one("div.book img")
+                if img_tag and img_tag.get("src"):
+                    img_url = urljoin(home_url, img_tag.get("src"))
+                    scraper = get_scraper()
+                    img_res = scraper.get(img_url, timeout=10)
+                    if img_res.status_code == 200:
+                        cover_image_data = img_res.content
+                        if "png" in img_url.lower():
+                            cover_image_ext = "png"
+    except Exception as e:
+        print(f"Không lấy được ảnh bìa: {e}")
 
     links = []
     current_url = start_url
@@ -162,7 +202,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await status.edit_text(f"📚 {title}\n⚡ Đang tự động cào lần lượt từng chương...")
     
-    # Cào liên tục cho đến khi hết nút "Chương sau" hoặc bị lặp lại link
     while current_url and current_url not in visited_urls:
         visited_urls.add(current_url)
         chapter_index = len(links) + 1
@@ -174,7 +213,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         links.append({"url": current_url, "name": chap_name, "content": content})
         
-        # Nếu không tìm thấy link chương sau nữa thì dừng lại hoàn toàn
         if not next_url or next_url in visited_urls:
             break
             
@@ -186,12 +224,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status.edit_text("❌ Không tìm thấy nội dung chương nào.")
         return
         
-    await status.edit_text(f"📚 {title}\n⚡ Đã xong tổng cộng {len(links)} chương. Đang đóng gói EPUB...")
+    await status.edit_text(f"📚 {title}\n⚡ Đã xong tổng cộng {len(links)} chương. Đang đóng gói EPUB kèm ảnh bìa...")
 
     book = epub.EpubBook()
     book.set_identifier('truyen_' + re.sub(r'\W+', '', title))
     book.set_title(title)
     book.set_language('vi')
+
+    if cover_image_data:
+        cover_filename = f"cover.{cover_image_ext}"
+        book.set_cover(cover_filename, cover_image_data)
 
     chapters_list = []
     for i, chap in enumerate(links):
@@ -214,7 +256,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(file_name, "rb") as f:
         await update.message.reply_document(
             document=f, 
-            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {len(links)} chương!"
+            caption=f"✅ Hoàn tất: {title}\n📖 Trọn bộ {len(links)} chương (Có ảnh bìa)!"
         )
 
     await status.delete()
