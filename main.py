@@ -56,7 +56,7 @@ def get_content(url):
 
 def download_chap(url):
     soup = get_content(url)
-    if not soup: return "", None, ""
+    if not soup: return None, ""
     
     container = (
         soup.select_one(".chapter-content") or
@@ -79,23 +79,6 @@ def download_chap(url):
         classes = " ".join(box.get("class", [])) if box.get("class") else ""
         if re.search(r"ads|banner|ebook|download|promo|nav|menu|box-h|truyen-hot|ads-chapter", classes, re.I):
             box.decompose()
-
-    real_title = ""
-    for h in container.find_all(["h1", "h2", "h3"]):
-        text = h.get_text().strip()
-        if re.match(r"^(chương|chuong|hồi|hoi)\s*\d+", text, re.I):
-            real_title = text
-            h.decompose()
-            break
-            
-    if not real_title and soup.title:
-        page_title = soup.title.get_text().strip()
-        if "-" in page_title:
-            parts = page_title.split("-")
-            for p in parts:
-                if re.search(r"chương|chuong", p, re.I):
-                    real_title = p.strip()
-                    break
 
     ignore_keywords = [
         "bỏ qua nội dung", "trang chủ", "lượt xem:", "cập nhật:", "chia sẻ", 
@@ -150,7 +133,7 @@ def download_chap(url):
                 next_url = urldefrag(urljoin(url, href))[0]
                 break
                 
-    return real_title, content_html, next_url
+    return content_html, next_url
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url_match = re.findall(r"https?://[^\s]+", update.message.text or "")
@@ -159,29 +142,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = await update.message.reply_text("⏳ Đang bắt đầu quét truyện từ link chương...")
     start_url = url_match[0].strip()
     
-    # Tải chương đầu tiên để lấy thông tin tên truyện và dò các chương tiếp theo
     first_soup = get_content(start_url)
     if not first_soup:
         await status.edit_text("❌ Không thể kết nối tới link chương.")
         return
         
-    # Trích xuất tên truyện từ tiêu đề trang
     page_title = first_soup.title.get_text().strip() if first_soup.title else "Truyện"
     title = page_title.split("-")[0].strip() if "-" in page_title else page_title
     
     links = []
     current_url = start_url
     
-    # Lần lượt cào các chương thông qua nút "Chương sau"
     await status.edit_text(f"📚 {title}\n⚡ Đang dò danh sách các chương...")
     
-    max_safety = 2000 # Giới hạn tối đa tránh lặp vô tận
+    max_safety = 2000 
     while current_url and len(links) < max_safety:
-        r_title, content, next_url = download_chap(current_url)
+        chapter_index = len(links) + 1
+        chap_name = f"Chương {chapter_index}"
+        
+        content, next_url = download_chap(current_url)
         if not content:
             break
             
-        chap_name = r_title or f"Chương {len(links) + 1}"
         links.append({"url": current_url, "name": chap_name, "content": content})
         
         if not next_url or next_url == current_url:
@@ -189,13 +171,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         current_url = next_url
         if len(links) % 10 == 0:
-            await status.edit_text(f"📚 {title}\n⚡ Đã dò thấy {len(links)} chương...")
+            await status.edit_text(f"📚 {title}\n⚡ Đã thu thập được {len(links)} chương...")
 
     if not links:
         await status.edit_text("❌ Không tìm thấy nội dung chương nào.")
         return
         
-    await status.edit_text(f"📚 {title}\n⚡ Đã thu thập xong {len(links)} chương. Đang đóng gói EPUB...")
+    await status.edit_text(f"📚 {title}\n⚡ Đã xong {len(links)} chương. Đang đóng gói EPUB...")
 
     book = epub.EpubBook()
     book.set_identifier('truyen_' + re.sub(r'\W+', '', title))
@@ -219,7 +201,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = f"{safe_title}.epub"
     epub.write_epub(file_name, book)
     
-    await status.edit_text("⬆️ Đang gửi file EPUB qua Telegram...")
+    await status.edit_text("⬆️️ Đang gửi file EPUB qua Telegram...")
     with open(file_name, "rb") as f:
         await update.message.reply_document(
             document=f, 
